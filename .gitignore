@@ -1,0 +1,21 @@
+# Ignore System Files
+.DS_Store
+__pycache__/
+
+# Ignore Virtual Environment
+venv/
+env/
+
+# Ignore Large Data Files
+raw_videos/
+raw_videos_tsl/
+landmarks_json/
+landmarks_json_tsl/
+
+# Ignore Weights (เก็บไว้ในเครื่องพอ)
+weights/
+tsl_weights/
+*.pth
+
+# Ignore Generated Files
+*.npy
