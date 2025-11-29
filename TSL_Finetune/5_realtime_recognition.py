@@ -20,7 +20,7 @@ RESET_DURATION_SECONDS = 3.5
 
 # แก้ไข: ลดเกณฑ์ความเชื่อมั่นลงเพื่อเปิดโอกาสให้โมเดลทำนาย
 # CONFIDENCE_THRESHOLD = 0.40
-CONFIDENCE_THRESHOLD = 0.10
+CONFIDENCE_THRESHOLD = 0.05
 
 # ----------------------------------
 

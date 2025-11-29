@@ -3,10 +3,11 @@ source venv/bin/activate
 cd /path/to/TSL_Finetune  # เปลี่ยน Path เป็น Path โฟลเดอร์จริงของคุณ
 
 
- 
+ ## run this command
 pip install -r requirements.txt
 
 pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+
 
 python3
 >>> import numpy, cv2, mediapipe, torch
