@@ -33,45 +33,121 @@ print(f"Using device: {DEVICE}")
 os.makedirs('tsl_weights', exist_ok=True) 
 
 # --- 2. Model Architecture (เพิ่ม Dropout) ---
+# class SignLangModel(nn.Module):
+#     def __init__(self, input_size=INPUT_SIZE, hidden_size=HIDDEN_SIZE, num_layers=NUM_LAYERS, num_classes=1000):
+#         super(SignLangModel, self).__init__()
+#         self.fc1 = nn.Linear(input_size, hidden_size * 2)
+#         self.relu1 = nn.ReLU()
+#         self.drop1 = nn.Dropout(0.5) # <-- NEW: เพิ่ม Dropout
+#         self.fc2 = nn.Linear(hidden_size * 2, hidden_size)
+#         self.relu2 = nn.ReLU()
+#         self.drop2 = nn.Dropout(0.5) # <-- NEW: เพิ่ม Dropout
+        
+#         self.lstm = nn.LSTM(
+#             input_size=hidden_size,
+#             hidden_size=hidden_size,
+#             num_layers=num_layers,
+#             batch_first=True,
+#             bidirectional=True
+#         )
+        
+#         self.fc_final = nn.Linear(hidden_size * 2, num_classes) 
+
+#     def forward(self, x):
+#         batch_size, seq_len, _ = x.size()
+#         x_reshaped = x.view(-1, x.size(-1))
+        
+#         out = self.fc1(x_reshaped)
+#         out = self.relu1(out)
+#         out = self.drop1(out) # <-- APPLY DROPOUT
+#         out = self.fc2(out)
+#         out = self.relu2(out)
+#         out = self.drop2(out) # <-- APPLY DROPOUT
+#         out = out.view(batch_size, seq_len, -1)
+        
+#         lstm_out, (h_n, c_n) = self.lstm(out)
+        
+#         final_state = torch.cat((h_n[-2, :, :], h_n[-1, :, :]), dim=1)
+        
+#         output = self.fc_final(final_state)
+#         return output
+# # ------------------------------------------------------------------
 class SignLangModel(nn.Module):
-    def __init__(self, input_size=INPUT_SIZE, hidden_size=HIDDEN_SIZE, num_layers=NUM_LAYERS, num_classes=1000):
+    def __init__(self, 
+                 input_size=543*3, 
+                 hidden_size=256, 
+                 num_layers=2, 
+                 num_classes=92):
         super(SignLangModel, self).__init__()
+
+        # --- MLP Encoder ---
         self.fc1 = nn.Linear(input_size, hidden_size * 2)
         self.relu1 = nn.ReLU()
-        self.drop1 = nn.Dropout(0.5) # <-- NEW: เพิ่ม Dropout
+        self.drop1 = nn.Dropout(0.4)
+
         self.fc2 = nn.Linear(hidden_size * 2, hidden_size)
         self.relu2 = nn.ReLU()
-        self.drop2 = nn.Dropout(0.5) # <-- NEW: เพิ่ม Dropout
-        
+        self.drop2 = nn.Dropout(0.4)
+
+        # --- LSTM ---
         self.lstm = nn.LSTM(
             input_size=hidden_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
-            bidirectional=True
+            bidirectional=True,
+            dropout=0.3
         )
-        
-        self.fc_final = nn.Linear(hidden_size * 2, num_classes) 
+
+        # --- LayerNorm after LSTM ---
+        self.norm = nn.LayerNorm(hidden_size * 2)
+
+        # --- Multi-Head Self Attention ---
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_size * 2,
+            num_heads=4,
+            dropout=0.2,
+            batch_first=True
+        )
+
+        # --- Final Classifier ---
+        self.fc_final = nn.Linear(hidden_size * 2, num_classes)
 
     def forward(self, x):
+        # x shape: (batch, seq_len, features)
+
+        # --- 0) Normalize landmark features ---
+        x = (x - x.mean(dim=-1, keepdim=True)) / (x.std(dim=-1, keepdim=True) + 1e-6)
+
         batch_size, seq_len, _ = x.size()
         x_reshaped = x.view(-1, x.size(-1))
-        
+
+        # --- 1) MLP Encoder ---
         out = self.fc1(x_reshaped)
         out = self.relu1(out)
-        out = self.drop1(out) # <-- APPLY DROPOUT
+        out = self.drop1(out)
+
         out = self.fc2(out)
         out = self.relu2(out)
-        out = self.drop2(out) # <-- APPLY DROPOUT
+        out = self.drop2(out)
+
         out = out.view(batch_size, seq_len, -1)
-        
-        lstm_out, (h_n, c_n) = self.lstm(out)
-        
-        final_state = torch.cat((h_n[-2, :, :], h_n[-1, :, :]), dim=1)
-        
+
+        # --- 2) LSTM ---
+        lstm_out, _ = self.lstm(out)
+
+        # --- 3) LayerNorm ---
+        lstm_out = self.norm(lstm_out)
+
+        # --- 4) Self-Attention ---
+        attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
+
+        # --- 5) Average pooling over time ---
+        final_state = torch.mean(attn_out, dim=1)
+
+        # --- 6) Classifier ---
         output = self.fc_final(final_state)
         return output
-# ------------------------------------------------------------------
 
 
 # --- 3. Dataset Loader (ไม่เปลี่ยนแปลง) ---

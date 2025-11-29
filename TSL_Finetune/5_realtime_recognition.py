@@ -19,7 +19,9 @@ PRED_HISTORY_LEN = 60
 RESET_DURATION_SECONDS = 3.5
 
 # แก้ไข: ลดเกณฑ์ความเชื่อมั่นลงเพื่อเปิดโอกาสให้โมเดลทำนาย
-CONFIDENCE_THRESHOLD = 0.40
+# CONFIDENCE_THRESHOLD = 0.40
+CONFIDENCE_THRESHOLD = 0.10
+
 # ----------------------------------
 
 # --- 2. TSL 92 CLASS LABELS ---
@@ -59,46 +61,122 @@ def load_class_labels():
     return index_to_label, len(TSL_LABELS)
 
 # --- 4. Model Architecture (เพิ่ม Dropout และแก้ fc2) ---
+# class SignLangModel(nn.Module):
+#     def __init__(self, input_size=543 * 3, hidden_size=256, num_layers=2, num_classes=92):
+#         super(SignLangModel, self).__init__()
+#         self.fc1 = nn.Linear(input_size, hidden_size * 2)
+#         self.relu1 = nn.ReLU()
+#         self.drop1 = nn.Dropout(0.5) # <-- NEW DROPOUT
+#         self.fc2 = nn.Linear(hidden_size * 2, hidden_size)
+#         self.relu2 = nn.ReLU()
+#         self.drop2 = nn.Dropout(0.5) # <-- NEW DROPOUT
+        
+#         self.lstm = nn.LSTM(
+#             input_size=hidden_size,
+#             hidden_size=hidden_size,
+#             num_layers=num_layers,
+#             batch_first=True,
+#             bidirectional=True
+#         )
+        
+#         self.fc_final = nn.Linear(hidden_size * 2, num_classes) 
+
+#     def forward(self, x):
+#         batch_size, seq_len, _ = x.size()
+#         x_reshaped = x.view(-1, x.size(-1))
+        
+#         # MLP layers 
+#         out = self.fc1(x_reshaped)
+#         out = self.relu1(out)
+#         out = self.drop1(out) # <-- APPLY DROPOUT
+#         out = self.fc2(out) # <-- แก้ไขแล้ว: ใช้อินพุต 'out'
+#         out = self.relu2(out)
+#         out = self.drop2(out) # <-- APPLY DROPOUT
+#         out = out.view(batch_size, seq_len, -1)
+        
+#         lstm_out, (h_n, c_n) = self.lstm(out)
+        
+#         final_state = torch.cat((h_n[-2, :, :], h_n[-1, :, :]), dim=1)
+        
+#         output = self.fc_final(final_state)
+#         return output
+#  -----------------------------------------------------------------------
 class SignLangModel(nn.Module):
-    def __init__(self, input_size=543 * 3, hidden_size=256, num_layers=2, num_classes=92):
+    def __init__(self, 
+                 input_size=543*3, 
+                 hidden_size=256, 
+                 num_layers=2, 
+                 num_classes=92):
         super(SignLangModel, self).__init__()
+
+        # --- MLP Encoder ---
         self.fc1 = nn.Linear(input_size, hidden_size * 2)
         self.relu1 = nn.ReLU()
-        self.drop1 = nn.Dropout(0.5) # <-- NEW DROPOUT
+        self.drop1 = nn.Dropout(0.4)
+
         self.fc2 = nn.Linear(hidden_size * 2, hidden_size)
         self.relu2 = nn.ReLU()
-        self.drop2 = nn.Dropout(0.5) # <-- NEW DROPOUT
-        
+        self.drop2 = nn.Dropout(0.4)
+
+        # --- LSTM ---
         self.lstm = nn.LSTM(
             input_size=hidden_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
-            bidirectional=True
+            bidirectional=True,
+            dropout=0.3
         )
-        
-        self.fc_final = nn.Linear(hidden_size * 2, num_classes) 
+
+        # --- LayerNorm after LSTM ---
+        self.norm = nn.LayerNorm(hidden_size * 2)
+
+        # --- Multi-Head Self Attention ---
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_size * 2,
+            num_heads=4,
+            dropout=0.2,
+            batch_first=True
+        )
+
+        # --- Final Classifier ---
+        self.fc_final = nn.Linear(hidden_size * 2, num_classes)
 
     def forward(self, x):
+        # x shape: (batch, seq_len, features)
+
+        # --- 0) Normalize landmark features ---
+        x = (x - x.mean(dim=-1, keepdim=True)) / (x.std(dim=-1, keepdim=True) + 1e-6)
+
         batch_size, seq_len, _ = x.size()
         x_reshaped = x.view(-1, x.size(-1))
-        
-        # MLP layers 
+
+        # --- 1) MLP Encoder ---
         out = self.fc1(x_reshaped)
         out = self.relu1(out)
-        out = self.drop1(out) # <-- APPLY DROPOUT
-        out = self.fc2(out) # <-- แก้ไขแล้ว: ใช้อินพุต 'out'
+        out = self.drop1(out)
+
+        out = self.fc2(out)
         out = self.relu2(out)
-        out = self.drop2(out) # <-- APPLY DROPOUT
+        out = self.drop2(out)
+
         out = out.view(batch_size, seq_len, -1)
-        
-        lstm_out, (h_n, c_n) = self.lstm(out)
-        
-        final_state = torch.cat((h_n[-2, :, :], h_n[-1, :, :]), dim=1)
-        
+
+        # --- 2) LSTM ---
+        lstm_out, _ = self.lstm(out)
+
+        # --- 3) LayerNorm ---
+        lstm_out = self.norm(lstm_out)
+
+        # --- 4) Self-Attention ---
+        attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
+
+        # --- 5) Average pooling over time ---
+        final_state = torch.mean(attn_out, dim=1)
+
+        # --- 6) Classifier ---
         output = self.fc_final(final_state)
         return output
-# -----------------------------------------------------------------------
 
 
 # --- 5. ฟังก์ชันสกัด Landmark (ไม่เปลี่ยนแปลง) ---
@@ -129,25 +207,30 @@ def extract_features(results):
     else:
         offset += 468 * 3 
         
-    # 3. Left Hand
+    # 3) Left Hand
     if results.left_hand_landmarks:
         for landmark in results.left_hand_landmarks.landmark:
             frame_features[offset] = landmark.x
-            frame_features[offset + 1] = landmark.y
-            frame_features[offset + 2] = landmark.z
+            frame_features[offset+1] = landmark.y
+            frame_features[offset+2] = landmark.z
             offset += 3
     else:
-        offset += 21 * 3 
+        # Padding for missing left hand (use -1 instead of 0)
+        frame_features[offset : offset+(21*3)] = -1.0
+        offset += 21 * 3
 
-    # 4. Right Hand
+    # 4) Right Hand
     if results.right_hand_landmarks:
         for landmark in results.right_hand_landmarks.landmark:
             frame_features[offset] = landmark.x
-            frame_features[offset + 1] = landmark.y
-            frame_features[offset + 2] = landmark.z
+            frame_features[offset+1] = landmark.y
+            frame_features[offset+2] = landmark.z
             offset += 3
     else:
-        offset += 21 * 3 
+        # Padding for missing right hand
+        frame_features[offset : offset+(21*3)] = -1.0
+        offset += 21 * 3
+
         
     return frame_features
 # -----------------------------------------------------------
@@ -170,7 +253,9 @@ def main():
 
     model = SignLangModel(num_classes=num_classes).to(DEVICE)
     try:
-        model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+        # model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+        state = torch.load(MODEL_PATH, map_location=DEVICE)
+        model.load_state_dict(state, strict=False)
         model.eval() # <-- IMPORTANT: ปิด Dropout เสมอในการทดสอบ
         print(f"Successfully loaded model weights from {MODEL_PATH}")
     except FileNotFoundError:
@@ -211,6 +296,10 @@ def main():
             image.flags.writeable = True
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             
+            print("POSE:", results.pose_landmarks is not None,
+            "LH:", results.left_hand_landmarks is not None,
+            "RH:", results.right_hand_landmarks is not None)
+
             # 4. สกัด Landmark และเพิ่มเข้า Buffer
             features = extract_features(results)
             sequence_buffer.append(features)
@@ -234,6 +323,12 @@ def main():
                             output_logits[0, idx] = -float('inf')
                     
                     prediction_history.append(output_logits.cpu().numpy().flatten())
+
+                # try:
+                #     print("Pred:", current_index, "Prob:", pred_prob.item())
+                # except:
+                #     print("Pred: None (no prediction yet)")
+
                 
                 # 6. ทำ Temporal Smoothing และ Timer Logic
                 if len(prediction_history) == PRED_HISTORY_LEN:
